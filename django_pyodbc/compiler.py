@@ -1,4 +1,4 @@
-# Copyright 2013-2017 Lionheart Software LLC
+# Copyright 2013 Lionheart Software LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -177,32 +177,39 @@ class SQLCompiler(compiler.SQLCompiler):
         match behavior of other django backends, it needs to not drop remainders.
         E.g. AVG([1, 2]) needs to yield 1.5, not 1
         """
-        for alias, aggregate in self.query.aggregate_select.items():
+        try:
+            # for django 1.10 and up (works starting in 1.8 so I am told)
+            select = self.query.annotation_select
+        except AttributeError:
+            # older
+            select = self.query.aggregate_select
+
+        for alias, aggregate in select.items():
             if not hasattr(aggregate, 'sql_function'):
                 continue
             if aggregate.sql_function == 'AVG':# and self.connection.cast_avg_to_float:
                 # Embed the CAST in the template on this query to
                 # maintain multi-db support.
-                self.query.aggregate_select[alias].sql_template = \
+                select[alias].sql_template = \
                     '%(function)s(CAST(%(field)s AS FLOAT))'
             # translate StdDev function names
             elif aggregate.sql_function == 'STDDEV_SAMP':
-                self.query.aggregate_select[alias].sql_function = 'STDEV'
+                select[alias].sql_function = 'STDEV'
             elif aggregate.sql_function == 'STDDEV_POP':
-                self.query.aggregate_select[alias].sql_function = 'STDEVP'
+                select[alias].sql_function = 'STDEVP'
             # translate Variance function names
             elif aggregate.sql_function == 'VAR_SAMP':
-                self.query.aggregate_select[alias].sql_function = 'VAR'
+                select[alias].sql_function = 'VAR'
             elif aggregate.sql_function == 'VAR_POP':
-                self.query.aggregate_select[alias].sql_function = 'VARP'
+                select[alias].sql_function = 'VARP'
 
-    def as_sql(self, with_limits=True, with_col_aliases=False):
+    def as_sql(self, with_limits=True, with_col_aliases=False, **kwargs):
         # Django #12192 - Don't execute any DB query when QS slicing results in limit 0
         if with_limits and self.query.low_mark == self.query.high_mark:
             return '', ()
 
-        if DjangoVersion[2] == 1 and DjangoVersion[3] < 10:
-            self._fix_aggregates()
+        self._fix_aggregates()
+
         self._using_row_number = False
 
         # Get out of the way if we're not a select query or there's no limiting involved.
@@ -213,13 +220,13 @@ class SQLCompiler(compiler.SQLCompiler):
             # unless TOP or FOR XML is also specified.
             try:
                 setattr(self.query, '_mssql_ordering_not_allowed', with_col_aliases)
-                result = super(SQLCompiler, self).as_sql(with_limits, with_col_aliases)
+                result = super(SQLCompiler, self).as_sql(with_limits, with_col_aliases, **kwargs)
             finally:
                 # remove in case query is every reused
                 delattr(self.query, '_mssql_ordering_not_allowed')
             return result
 
-        raw_sql, fields = super(SQLCompiler, self).as_sql(False, with_col_aliases)
+        raw_sql, fields = super(SQLCompiler, self).as_sql(False, with_col_aliases, **kwargs)
 
         # Check for high mark only and replace with "TOP"
         if self.query.high_mark is not None and not self.query.low_mark:
